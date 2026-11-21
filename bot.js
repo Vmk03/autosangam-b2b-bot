@@ -69,6 +69,12 @@ if (!config.TELEGRAM_BOT_TOKEN || config.TELEGRAM_BOT_TOKEN === 'YOUR_TELEGRAM_B
   process.exit(1);
 }
 const bot = new TelegramBot(config.TELEGRAM_BOT_TOKEN, { polling: true });
+bot.on('polling_error', (err) => {
+  // Suppress transient DNS / timeout warnings
+  if (err.code && err.code !== 'EFATAL') {
+    console.warn('⚠️ Telegram polling notice:', err.message);
+  }
+});
 console.log('🤖 AutoSangam B2B Telegram Bot is running...');
 
 // In-memory sessions
@@ -407,20 +413,24 @@ async function runAutoCleanup() {
     console.log('🧹 [Auto-Cleanup] Checking for expired B2B audio files in Cloudinary & Firestore...');
     const now = admin.firestore.Timestamp.now();
 
-    // Query pending rides that have expired
-    const expiredSnap = await db.collection('rides')
+    // Query pending rides without needing any composite index
+    const pendingSnap = await db.collection('rides')
       .where('status', '==', 'pending')
-      .where('expiresAt', '<', now)
       .limit(50)
       .get();
 
-    if (expiredSnap.empty) {
+    const expiredDocs = pendingSnap.docs.filter(doc => {
+      const exp = doc.data().expiresAt;
+      return exp && exp.toMillis() <= now.toMillis();
+    });
+
+    if (expiredDocs.length === 0) {
       console.log('🧹 [Auto-Cleanup] No expired pending rides found.');
       return;
     }
 
     let deletedCount = 0;
-    for (const doc of expiredSnap.docs) {
+    for (const doc of expiredDocs) {
       const data = doc.data();
 
       // Notify posting driver that the ride was not accepted and has expired
