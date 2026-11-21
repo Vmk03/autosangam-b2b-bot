@@ -407,6 +407,7 @@ async function processAndCreateRide(chatId, driver, fileId, details) {
 // ==========================================
 const notifiedAcceptedRideIds = new Set();
 const notifiedExpiredRideIds = new Set();
+const notifiedCompletedRideIds = new Set();
 
 async function runAutoCleanup() {
   try {
@@ -568,6 +569,30 @@ function startRideStatusListener() {
       });
     }, (error) => {
       console.error('Ride cancellation listener error:', error.message);
+    });
+
+  // Listen for completed rides in real-time and notify with final fare!
+  db.collection('rides')
+    .where('status', '==', 'completed')
+    .onSnapshot((snapshot) => {
+      snapshot.docChanges().forEach((change) => {
+        if (change.type === 'added' || change.type === 'modified') {
+          const ride = change.doc.data();
+          const rideId = change.doc.id;
+          const chatId = ride.telegramChatId;
+
+          if (chatId && !notifiedCompletedRideIds.has(rideId)) {
+            notifiedCompletedRideIds.add(rideId);
+            const totalFare = ride.totalFare || ride.fare || ride.meterData?.totalAmount || 0;
+            const fareStr = Math.round(totalFare);
+            const completedText = `✅ பயணம் முடிந்தது (கட்டணம்: ₹${fareStr})`;
+
+            bot.sendMessage(chatId, completedText).catch(() => {});
+          }
+        }
+      });
+    }, (error) => {
+      console.error('Ride completion listener error:', error.message);
     });
 }
 
