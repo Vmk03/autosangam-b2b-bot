@@ -1,0 +1,16 @@
+{
+  "name": "autosangam-b2b-telegram-bot",
+  "version": "1.0.0",
+  "description": "Telegram Bot for AutoSangam B2B Driver Ride Posting",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "cloudinary": "^1.41.0",
+    "dotenv": "^16.4.7",
+    "firebase-admin": "^11.11.0",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}
