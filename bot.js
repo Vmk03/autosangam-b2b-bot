@@ -549,9 +549,9 @@ function startRideStatusListener() {
                 bot.deleteMessage(chatId, messageId).catch(() => {});
               }
 
-              // Transform into a tiny circular face-focused avatar sticker (with yellow border like AutoSangam logo)
+              // Transform into a tiny circular face-focused avatar sticker (exact App Icon size with yellow border)
               const roundStickerUrl = (photoUrl.includes('cloudinary.com') && photoUrl.includes('/upload/'))
-                ? photoUrl.replace('/upload/', '/upload/w_96,h_96,c_fill,g_face,r_max,bo_3px_solid_rgb:FFB300/b_transparent,w_512,h_512,c_pad,f_webp/')
+                ? photoUrl.replace('/upload/', '/upload/w_72,h_72,c_fill,g_face,r_max,bo_2px_solid_rgb:FFB300/b_transparent,w_512,h_512,c_pad,f_webp/')
                 : photoUrl;
 
               // Send as a compact circular sticker (round shape, never stretched!)
