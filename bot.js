@@ -512,7 +512,7 @@ function startRideStatusListener() {
 
               // Transform into a compact circular face-focused WebP sticker
               const roundStickerUrl = (photoUrl.includes('cloudinary.com') && photoUrl.includes('/upload/'))
-                ? photoUrl.replace('/upload/', '/upload/w_256,h_256,c_fill,g_face,r_max,f_webp/')
+                ? photoUrl.replace('/upload/', '/upload/w_180,h_180,c_fill,g_face,r_max/b_transparent,w_512,h_512,c_pad,f_webp/')
                 : photoUrl;
 
               // Send as a compact circular sticker (round shape, never stretched!)
