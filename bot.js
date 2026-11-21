@@ -583,6 +583,13 @@ function startRideStatusListener() {
 
           if (chatId && !notifiedCompletedRideIds.has(rideId)) {
             notifiedCompletedRideIds.add(rideId);
+            // Only notify if ride completed recently (within last 10 minutes) or modified live
+            const completedAt = ride.completedAt?.toDate ? ride.completedAt.toDate() : (ride.completedAt ? new Date(ride.completedAt) : null);
+            const isRecent = !completedAt || (Date.now() - completedAt.getTime()) < 10 * 60 * 1000;
+            if (!isRecent && change.type === 'added') {
+              return;
+            }
+
             const totalFare = ride.totalFare || ride.fare || ride.meterData?.totalAmount || 0;
             const fareStr = Math.round(totalFare);
             const completedText = `✅ பயணம் முடிந்தது (கட்டணம்: ₹${fareStr})`;
