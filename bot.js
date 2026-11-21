@@ -259,14 +259,14 @@ function parseRideDetails(text) {
   let pickupText = null;
   let dropText = null;
 
-  // Separator for pickup and drop: to, டூ, -, –, ->, ➔, >
-  const separator = /\s+(?:to|டூ|–|-|->|➔|>)\s+/i;
+  // Separator for pickup and drop: to, டு, டூ, 2, -, –, —, ->, ➔, >, /, வரை, நோக்கி
+  const separator = /\s*(?:to|டூ|டு|2|–|-|—|->|-->|➔|>|\/|வரை|நோக்கி)\s+/i;
   const parts = remaining.split(separator);
 
   if (parts.length >= 2 && parts[0].trim().length > 0 && parts[1].trim().length > 0) {
     pickupText = parts[0].trim();
     dropText = parts[1].trim();
-  } else if (remaining.length > 2) {
+  } else if (remaining.length > 1) {
     pickupText = remaining.trim();
   }
 
@@ -300,13 +300,20 @@ bot.on('message', async (msg) => {
     if (details.customerPhone) {
       await processAndCreateRide(chatId, driver, fileId, details);
     } else {
-      // Store pending audio file and ask for customer phone and optional details
+      // Store pending audio file and any route text included in caption
       session.pendingAudioFileId = fileId;
+      session.pendingPickupText = details.pickupText || null;
+      session.pendingDropText = details.dropText || null;
+      session.pendingMapUrl = details.mapUrl || null;
       sessions.set(chatId, session);
+
+      const routeNote = details.pickupText
+        ? `\n📍 வழித்தடம்: ${details.pickupText}${details.dropText ? ' ➔ ' + details.dropText : ''}\n`
+        : '';
 
       bot.sendMessage(
         chatId,
-        `🎤 உங்கள் ஆடியோ பெறப்பட்டது!\n\nவாடிக்கையாளரின் 10 இலக்க மொபைல் எண் (மற்றும் வழித்தடம் / மேப் லிங்க்) அனுப்பவும்:\n\n(எ.கா: 9876543210 காந்திபுரம் to பீளமேடு)`
+        `🎤 உங்கள் ஆடியோ பெறப்பட்டது!${routeNote}\nவாடிக்கையாளரின் 10 இலக்க மொபைல் எண் (மற்றும் வழித்தடம் / மேப் லிங்க்) அனுப்பவும்:\n\n(எ.கா: 9876543210 காந்திபுரம் டு பீளமேடு)`
       );
     }
     return;
@@ -318,17 +325,49 @@ bot.on('message', async (msg) => {
     const details = parseRideDetails(text);
 
     if (!details.customerPhone) {
+      // If it looks like a route (e.g. "காந்திபுரம் டு பீளமேடு") without a phone number yet:
+      if (details.pickupText) {
+        session.pendingPickupText = details.pickupText;
+        session.pendingDropText = details.dropText;
+        session.pendingMapUrl = details.mapUrl;
+        sessions.set(chatId, session);
+
+        const routeDisplay = details.dropText
+          ? `${details.pickupText} ➔ ${details.dropText}`
+          : details.pickupText;
+
+        return bot.sendMessage(
+          chatId,
+          `📍 வழித்தடம் பெறப்பட்டது:\n${routeDisplay}\n\nவாடிக்கையாளரின் 10 இலக்க மொபைல் எண்ணை அனுப்பவும் (எ.கா: 9876543210):`
+        );
+      }
+
       return bot.sendMessage(
         chatId,
-        `⚠️ தயவுசெய்து சரியான 10 இலக்க மொபைல் எண்ணை அனுப்பவும் (எ.கா: 9876543210):`
+        `⚠️ தயவுசெய்து சரியான 10 இலக்க மொபைல் எண்ணை அனுப்பவும் (எ.கா: 9876543210 காந்திபுரம் டு பீளமேடு):`
       );
     }
 
     const pendingFileId = session.pendingAudioFileId || null;
-    session.pendingAudioFileId = null; // Clear pending state
+    const finalPickupText = details.pickupText || session.pendingPickupText || null;
+    const finalDropText = details.dropText || session.pendingDropText || null;
+    const finalMapUrl = details.mapUrl || session.pendingMapUrl || null;
+
+    // Clear pending state
+    session.pendingAudioFileId = null;
+    session.pendingPickupText = null;
+    session.pendingDropText = null;
+    session.pendingMapUrl = null;
     sessions.set(chatId, session);
 
-    await processAndCreateRide(chatId, driver, pendingFileId, details);
+    const mergedDetails = {
+      customerPhone: details.customerPhone,
+      pickupText: finalPickupText,
+      dropText: finalDropText,
+      mapUrl: finalMapUrl
+    };
+
+    await processAndCreateRide(chatId, driver, pendingFileId, mergedDetails);
   }
 });
 
