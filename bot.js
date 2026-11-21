@@ -543,36 +543,29 @@ function startRideStatusListener() {
 
             const acceptedText = `புக்கிங் வெற்றிகரமாக எடுக்கப்பட்டது\n\nபெயர்: ${driverName}\nவண்டி எண்: ${vehicleNumber}\nபோன் நம்பர்: ${driverPhone}`;
 
-            if (photoUrl && photoUrl.startsWith('http')) {
-              // Delete the previous "புக்கிங் சென்று கொண்டிருக்கிறது..." message
-              if (messageId) {
-                bot.deleteMessage(chatId, messageId).catch(() => {});
-              }
+            const replyMarkup = (photoUrl && photoUrl.startsWith('http'))
+              ? {
+                  inline_keyboard: [
+                    [
+                      {
+                        text: '📷 டிரைவர் படம் பார்க்க',
+                        url: photoUrl
+                      }
+                    ]
+                  ]
+                }
+              : undefined;
 
-              // Transform into a tiny circular face-focused avatar sticker (exact App Icon size with yellow border)
-              const roundStickerUrl = (photoUrl.includes('cloudinary.com') && photoUrl.includes('/upload/'))
-                ? photoUrl.replace('/upload/', '/upload/w_72,h_72,c_fill,g_face,r_max,bo_2px_solid_rgb:FFB300/b_transparent,w_512,h_512,c_pad,f_webp/')
-                : photoUrl;
-
-              // Send as a compact circular sticker (round shape, never stretched!)
-              bot.sendSticker(chatId, roundStickerUrl)
-                .then(() => {
-                  bot.sendMessage(chatId, acceptedText).catch(() => {});
-                })
-                .catch((err) => {
-                  console.error('Sticker send fallback:', err.message);
-                  bot.sendMessage(chatId, acceptedText).catch(() => {});
-                });
+            if (messageId) {
+              bot.editMessageText(acceptedText, {
+                chat_id: chatId,
+                message_id: messageId,
+                reply_markup: replyMarkup
+              }).catch(() => {
+                bot.sendMessage(chatId, acceptedText, { reply_markup: replyMarkup }).catch(() => {});
+              });
             } else {
-              if (messageId) {
-                bot.editMessageText(acceptedText, { chat_id: chatId, message_id: messageId })
-                  .catch(() => {
-                    bot.deleteMessage(chatId, messageId).catch(() => {});
-                    bot.sendMessage(chatId, acceptedText).catch(() => {});
-                  });
-              } else {
-                bot.sendMessage(chatId, acceptedText).catch(() => {});
-              }
+              bot.sendMessage(chatId, acceptedText, { reply_markup: replyMarkup }).catch(() => {});
             }
           }
         }
