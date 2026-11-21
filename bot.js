@@ -427,15 +427,20 @@ async function processAndCreateRide(chatId, driver, fileId, details) {
 
     const docRef = await db.collection('rides').add(rideDoc);
     console.log(`✅ [B2B Ride Created] ID: ${docRef.id} by ${driver.name} (Phone: ${details.customerPhone}, Route: ${details.pickupText || ''} -> ${details.dropText || ''}, Map: ${details.mapUrl || 'None'})`);
+
+    // Schedule exact expiry cleanup right after timeout (2 minutes)
+    setTimeout(() => {
+      runAutoCleanup().catch(() => {});
+    }, (config.RIDE_DEFAULTS.timeoutSeconds + 2) * 1000);
   } catch (error) {
     console.error('❌ Error creating B2B ride from bot:', error);
     if (statusMsg) {
       bot.editMessageText('புக்கிங் பதிவிட முடியவில்லை. மீண்டும் முயற்சிக்கவும்.', {
         chat_id: chatId,
         message_id: statusMsg.message_id
-      }).catch(() => {});
+      }).catch(() => { });
     } else {
-      bot.sendMessage(chatId, 'புக்கிங் பதிவிட முடியவில்லை. மீண்டும் முயற்சிக்கவும்.').catch(() => {});
+      bot.sendMessage(chatId, 'புக்கிங் பதிவிட முடியவில்லை. மீண்டும் முயற்சிக்கவும்.').catch(() => { });
     }
   }
 }
@@ -477,14 +482,14 @@ async function runAutoCleanup() {
       if (data.telegramChatId && !notifiedExpiredRideIds.has(doc.id)) {
         notifiedExpiredRideIds.add(doc.id);
         const msgId = data.telegramMessageId;
-        const expiredText = 'புக்கிங் ரத்து செய்யப்பட்டது';
+        const expiredText = '⏰ யாரும் புக்கிங் எடுக்கவில்லை - நேரம் முடிந்தது (காலாவதியானது)';
         if (msgId) {
           bot.editMessageText(expiredText, { chat_id: data.telegramChatId, message_id: msgId })
             .catch(() => {
-              bot.sendMessage(data.telegramChatId, expiredText).catch(() => {});
+              bot.sendMessage(data.telegramChatId, expiredText).catch(() => { });
             });
         } else {
-          bot.sendMessage(data.telegramChatId, expiredText).catch(() => {});
+          bot.sendMessage(data.telegramChatId, expiredText).catch(() => { });
         }
       }
 
@@ -587,14 +592,14 @@ function startRideStatusListener() {
           if (chatId && !notifiedExpiredRideIds.has(rideId)) {
             notifiedExpiredRideIds.add(rideId);
             const messageId = ride.telegramMessageId;
-            const cancelledText = 'புக்கிங் ரத்து செய்யப்பட்டது';
+            const cancelledText = '❌ புக்கிங் ரத்து செய்யப்பட்டது';
             if (messageId) {
               bot.editMessageText(cancelledText, { chat_id: chatId, message_id: messageId })
                 .catch(() => {
-                  bot.sendMessage(chatId, cancelledText).catch(() => {});
+                  bot.sendMessage(chatId, cancelledText).catch(() => { });
                 });
             } else {
-              bot.sendMessage(chatId, cancelledText).catch(() => {});
+              bot.sendMessage(chatId, cancelledText).catch(() => { });
             }
           }
         }
@@ -626,7 +631,7 @@ function startRideStatusListener() {
             const fareStr = Math.round(totalFare);
             const completedText = `✅ பயணம் முடிந்தது (கட்டணம்: ₹${fareStr})`;
 
-            bot.sendMessage(chatId, completedText).catch(() => {});
+            bot.sendMessage(chatId, completedText).catch(() => { });
           }
         }
       });
@@ -638,7 +643,7 @@ function startRideStatusListener() {
 // Start Real-time listeners
 startRideStatusListener();
 
-// Run cleanup every 30 minutes
-setInterval(runAutoCleanup, 30 * 60 * 1000);
+// Run cleanup every 1 minute to immediately catch expired rides
+setInterval(runAutoCleanup, 60 * 1000);
 // Run once on startup after 10 seconds
 setTimeout(runAutoCleanup, 10000);
