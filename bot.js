@@ -489,9 +489,107 @@ function parseRideDetails(text) {
   return { customerPhone, mapUrl, pickupText, dropText };
 }
 
+// Helper to cancel an active or accepted ride
+async function cancelActiveRide(chatId, specificRideId = null) {
+  let rideDoc = null;
+
+  if (specificRideId) {
+    const doc = await db.collection('rides').doc(specificRideId).get();
+    if (doc.exists) rideDoc = doc;
+  }
+
+  if (!rideDoc) {
+    const session = sessions.get(chatId);
+    if (session && session.latestRideId) {
+      const doc = await db.collection('rides').doc(session.latestRideId).get();
+      if (doc.exists) {
+        const s = doc.data().status;
+        if (s === 'pending' || s === 'accepted') {
+          rideDoc = doc;
+        }
+      }
+    }
+  }
+
+  if (!rideDoc) {
+    // Search recent rides for this chatId
+    const snap = await db.collection('rides')
+      .where('telegramChatId', '==', chatId)
+      .limit(10)
+      .get();
+
+    const activeDocs = snap.docs.filter(d => {
+      const s = d.data().status;
+      return s === 'pending' || s === 'accepted';
+    });
+
+    if (activeDocs.length > 0) {
+      activeDocs.sort((a, b) => {
+        const tA = a.data().createdAt?.toMillis ? a.data().createdAt.toMillis() : 0;
+        const tB = b.data().createdAt?.toMillis ? b.data().createdAt.toMillis() : 0;
+        return tB - tA;
+      });
+      rideDoc = activeDocs[0];
+    }
+  }
+
+  if (!rideDoc) {
+    return bot.sendMessage(chatId, 'ℹ️ தற்போது ரத்து செய்வதற்கு எந்த ஆக்டிவ் வாடகையும் இல்லை.');
+  }
+
+  const rideData = rideDoc.data();
+  if (rideData.status === 'completed') {
+    return bot.sendMessage(chatId, '⚠️ இந்த பயணம் ஏற்கனவே முடிந்துவிட்டது. ரத்து செய்ய முடியாது.');
+  }
+  if (rideData.status === 'cancelled') {
+    return bot.sendMessage(chatId, 'ℹ️ இந்த வாடகை ஏற்கனவே ரத்து செய்யப்பட்டுவிட்டது.');
+  }
+
+  await rideDoc.ref.update({
+    status: 'cancelled',
+    cancelledBy: 'posting_driver_telegram',
+    cancellationReason: 'வாடகை போட்ட ஓட்டுநர் ரத்து செய்துவிட்டார்',
+    cancelledAt: admin.firestore.FieldValue.serverTimestamp()
+  });
+
+  // Delete audio if exists
+  if (rideData.audioUrl) {
+    deleteCloudinaryAudio(rideData.audioUrl).catch(() => {});
+  }
+
+  // Update original status message in Telegram if exists
+  if (rideData.telegramMessageId) {
+    bot.editMessageText('❌ இந்த புக்கிங் ரத்து செய்யப்பட்டது', {
+      chat_id: chatId,
+      message_id: rideData.telegramMessageId
+    }).catch(() => {});
+  }
+
+  return bot.sendMessage(chatId, '❌ உங்கள் புக்கிங் வெற்றிகரமாக ரத்து செய்யப்பட்டது!');
+}
+
+// Handle Inline button clicks (like cancel button)
+bot.on('callback_query', async (query) => {
+  const chatId = query.message?.chat?.id;
+  const data = query.data;
+
+  if (data && data.startsWith('cancel_')) {
+    const rideId = data.replace('cancel_', '');
+    bot.answerCallbackQuery(query.id, { text: 'ரத்து செய்யப்படுகிறது...' }).catch(() => {});
+    await cancelActiveRide(chatId, rideId);
+  }
+});
+
 // Handle Voice / Audio messages
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
+  const text = msg.text ? msg.text.trim() : '';
+
+  // Cancel trigger: ❌, ✖️, ✕, ✗, ✘, x, X, cancel, /cancel, ரத்து
+  const isCancel = /^(?:❌|✖️|✕|✗|✘|[xX]|cancel|\/cancel|ரத்து)$/u.test(text);
+  if (isCancel) {
+    return cancelActiveRide(chatId);
+  }
 
   // Ignore commands and contact messages handled above
   if (msg.text && msg.text.startsWith('/')) return;
@@ -644,6 +742,11 @@ async function processAndCreateRide(chatId, driver, fileId, details) {
     const docRef = await db.collection('rides').add(rideDoc);
     console.log(`✅ [B2B Ride Created] ID: ${docRef.id} by ${driver.name} (Phone: ${details.customerPhone}, Route: ${details.pickupText || ''} -> ${details.dropText || ''}, Map: ${details.mapUrl || 'None'})`);
 
+    // Track latest ride for this chat in session
+    const currentSession = sessions.get(chatId) || { driver };
+    currentSession.latestRideId = docRef.id;
+    sessions.set(chatId, currentSession);
+
     // Schedule exact expiry cleanup right after timeout (2 minutes)
     setTimeout(() => {
       runAutoCleanup().catch(() => {});
@@ -767,20 +870,23 @@ function startRideStatusListener() {
             const photoUrl = acceptedBy.photoUrl || acceptedBy.driverPhoto || acceptedBy.selfieUrl || '';
             const messageId = ride.telegramMessageId;
 
-            const acceptedText = `புக்கிங் வெற்றிகரமாக எடுக்கப்பட்டது\n\nபெயர்: ${driverName}\nவண்டி எண்: ${vehicleNumber}\nபோன் நம்பர்: ${driverPhone}`;
+            const acceptedText = `புக்கிங் வெற்றிகரமாக எடுக்கப்பட்டது\n\nபெயர்: ${driverName}\nவண்டி எண்: ${vehicleNumber}\nபோன் நம்பர்: ${driverPhone}\n\n💡 ரத்து செய்ய: ❌ என அனுப்பவும்`;
 
-            const replyMarkup = (photoUrl && photoUrl.startsWith('http'))
-              ? {
-                  inline_keyboard: [
-                    [
-                      {
-                        text: '📷 டிரைவர் படம் பார்க்க',
-                        url: photoUrl
-                      }
-                    ]
-                  ]
-                }
-              : undefined;
+            const inlineButtons = [];
+            if (photoUrl && photoUrl.startsWith('http')) {
+              inlineButtons.push({
+                text: '📷 படம்',
+                url: photoUrl
+              });
+            }
+            inlineButtons.push({
+              text: '❌ வாடகை ரத்து செய்',
+              callback_data: `cancel_${rideId}`
+            });
+
+            const replyMarkup = {
+              inline_keyboard: [inlineButtons]
+            };
 
             if (messageId) {
               bot.editMessageText(acceptedText, {
