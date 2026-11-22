@@ -179,6 +179,22 @@ function getPublicIdFromUrl(url) {
   }
 }
 
+// Delete audio from Cloudinary
+async function deleteCloudinaryAudio(audioUrl) {
+  if (!audioUrl) return;
+  const publicId = getPublicIdFromUrl(audioUrl);
+  if (!publicId) return;
+  try {
+    await cloudinary.uploader.destroy(publicId, {
+      resource_type: 'video',
+      invalidate: true
+    });
+    console.log(`🗑️ Deleted Cloudinary audio: ${publicId}`);
+  } catch (e) {
+    console.error(`Error deleting Cloudinary audio ${publicId}:`, e.message);
+  }
+}
+
 // ==========================================
 // TELEGRAM MESSAGE HANDLERS
 // ==========================================
@@ -503,18 +519,7 @@ async function runAutoCleanup() {
 
       // Only clean up B2B audio (customer rides don't have audio)
       if (data.audioUrl) {
-        const publicId = getPublicIdFromUrl(data.audioUrl);
-        if (publicId) {
-          try {
-            await cloudinary.uploader.destroy(publicId, {
-              resource_type: 'video',
-              invalidate: true
-            });
-            console.log(`🗑️ Deleted Cloudinary audio: ${publicId}`);
-          } catch (e) {
-            console.error(`Error deleting Cloudinary audio ${publicId}:`, e.message);
-          }
-        }
+        await deleteCloudinaryAudio(data.audioUrl);
       }
 
       // Delete expired pending document from Firestore
@@ -523,6 +528,22 @@ async function runAutoCleanup() {
     }
 
     console.log(`🎉 [Auto-Cleanup] Successfully cleaned ${deletedCount} expired B2B rides & audio files!`);
+
+    // Also sweep and delete any remaining audio files from completed or cancelled rides
+    const finishedSnap = await db.collection('rides')
+      .where('status', 'in', ['completed', 'cancelled'])
+      .limit(30)
+      .get();
+
+    for (const fDoc of finishedSnap.docs) {
+      const fData = fDoc.data();
+      if (fData.audioUrl) {
+        await deleteCloudinaryAudio(fData.audioUrl);
+        await fDoc.ref.update({
+          audioUrl: admin.firestore.FieldValue.delete()
+        }).catch(() => {});
+      }
+    }
   } catch (err) {
     console.error('❌ Error during auto-cleanup:', err.message);
   }
@@ -609,6 +630,11 @@ function startRideStatusListener() {
             } else {
               bot.sendMessage(chatId, cancelledText).catch(() => { });
             }
+
+            // Immediately delete audio from Cloudinary
+            if (ride.audioUrl) {
+              deleteCloudinaryAudio(ride.audioUrl).catch(() => { });
+            }
           }
         }
       });
@@ -640,6 +666,11 @@ function startRideStatusListener() {
             const completedText = `✅ பயணம் முடிந்தது (கட்டணம்: ₹${fareStr})`;
 
             bot.sendMessage(chatId, completedText).catch(() => { });
+
+            // Immediately delete audio from Cloudinary once ride is completed
+            if (ride.audioUrl) {
+              deleteCloudinaryAudio(ride.audioUrl).catch(() => { });
+            }
           }
         }
       });
