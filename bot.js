@@ -56,6 +56,14 @@ server.listen(PORT, () => {
   console.log(`🌐 Keep-Alive HTTP health server is running on port ${PORT}`);
 });
 
+// Self-ping every 8 minutes to help keep Render alive
+const SERVICE_URL = process.env.RENDER_EXTERNAL_URL || 'https://autosangam-b2b-bot.onrender.com';
+setInterval(() => {
+  axios.get(SERVICE_URL)
+    .then(() => console.log('💓 Keep-alive ping sent to', SERVICE_URL))
+    .catch((err) => console.warn('⚠️ Keep-alive ping warning:', err.message));
+}, 8 * 60 * 1000);
+
 // 2. Configure Cloudinary
 cloudinary.config({
   cloud_name: config.CLOUDINARY.cloud_name,
