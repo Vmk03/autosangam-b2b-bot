@@ -137,7 +137,7 @@ async function findDriverByPhone(phone10) {
 
     // In AutoSangam, drivers in the 'drivers' collection are already registered & approved!
     // They are only unapproved if explicitly marked suspended, deleted, or pending.
-    const isSuspended = data.isSuspended === true || data.status === 'suspended';
+    const isSuspended = data.isSuspended === true || data.status === 'suspended' || data.blockedFromTelegram === true;
     const isDeleted = data.isDeleted === true || data.status === 'deleted';
     const isPending = data.status === 'pending' || data.subscriptionStatus === 'pending';
 
@@ -215,6 +215,151 @@ async function deleteCloudinaryAudio(audioUrl) {
 // ==========================================
 // TELEGRAM MESSAGE HANDLERS
 // ==========================================
+
+// Admin Configuration
+const ADMIN_CHAT_IDS = new Set([6402914481]);
+
+function isAdminUser(chatId, fromId) {
+  if (ADMIN_CHAT_IDS.has(chatId) || (fromId && ADMIN_CHAT_IDS.has(fromId))) return true;
+  const session = sessions.get(chatId);
+  if (session && session.driver && session.driver.phone === '9944848421') return true;
+  return false;
+}
+
+// /admin command - displays admin dashboard in Telegram
+bot.onText(/\/admin/, (msg) => {
+  const chatId = msg.chat.id;
+  if (!isAdminUser(chatId, msg.from?.id)) return;
+
+  bot.sendMessage(
+    chatId,
+    `👑 *AutoSangam Admin Controls:*\n\n` +
+    `🚫 *டிரைவரை நீக்க / பிளாக் செய்ய:*\n` +
+    `\`/block <10 இலக்க போன் நம்பர்>\`\n` +
+    `_(எ.கா: \`/block 7339160730\`)_\n\n` +
+    `✅ *மீண்டும் அனுமதிக்க / அன்-பிளாக் செய்ய:*\n` +
+    `\`/unblock <10 இலக்க போன் நம்பர்>\`\n` +
+    `_(எ.கா: \`/unblock 7339160730\`)_\n\n` +
+    `🔍 *டிரைவர் விவரம் பார்க்க:*\n` +
+    `\`/check <10 இலக்க போன் நம்பர்>\``,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// /block <phone> command
+bot.onText(/\/block(?:\s+(\d{10}))?/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdminUser(chatId, msg.from?.id)) return;
+
+  const phone = match[1];
+  if (!phone) {
+    return bot.sendMessage(chatId, '❌ பயன்படுத்தும் முறை:\n/block 9876543210 (10 இலக்க போன் நம்பர் குறிப்பிடவும்)');
+  }
+
+  try {
+    const variants = getPhoneVariants(phone);
+    const snap = await db.collection('drivers').where('phone', 'in', variants).get();
+
+    if (snap.empty) {
+      return bot.sendMessage(chatId, `❌ இந்த எண் (${phone}) கொண்ட ஓட்டுநர் ஆட்டோ சங்கத்தில் காணப்படவில்லை.`);
+    }
+
+    let driverName = '';
+    for (const doc of snap.docs) {
+      driverName = doc.data().name || driverName;
+      await doc.ref.update({
+        isSuspended: true,
+        blockedFromTelegram: true,
+        status: 'suspended'
+      });
+    }
+
+    // Invalidate any active in-memory session for this phone
+    for (const [sChatId, sess] of sessions.entries()) {
+      if (sess.driver && normalizePhone(sess.driver.phone) === phone) {
+        sessions.delete(sChatId);
+        bot.sendMessage(sChatId, '⚠️ உங்கள் ஓட்டுநர் கணக்கு நிர்வாகியால் இடைநிறுத்தப்பட்டுள்ளது.').catch(() => {});
+      }
+    }
+
+    bot.sendMessage(chatId, `🚫 ஓட்டுநர் *${driverName || 'Driver'}* (${phone}) வெற்றிகரமாக பிளாக் செய்யப்பட்டார்.\n\nஇனி அவரால் Telegram Bot-ஐ பயன்படுத்த முடியாது.`, { parse_mode: 'Markdown' });
+  } catch (err) {
+    console.error('Error blocking driver:', err.message);
+    bot.sendMessage(chatId, `❌ பிளாக் செய்யும்போது பிழை: ${err.message}`);
+  }
+});
+
+// /unblock <phone> command
+bot.onText(/\/unblock(?:\s+(\d{10}))?/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdminUser(chatId, msg.from?.id)) return;
+
+  const phone = match[1];
+  if (!phone) {
+    return bot.sendMessage(chatId, '❌ பயன்படுத்தும் முறை:\n/unblock 9876543210 (10 இலக்க போன் நம்பர் குறிப்பிடவும்)');
+  }
+
+  try {
+    const variants = getPhoneVariants(phone);
+    const snap = await db.collection('drivers').where('phone', 'in', variants).get();
+
+    if (snap.empty) {
+      return bot.sendMessage(chatId, `❌ இந்த எண் (${phone}) கொண்ட ஓட்டுநர் ஆட்டோ சங்கத்தில் காணப்படவில்லை.`);
+    }
+
+    let driverName = '';
+    for (const doc of snap.docs) {
+      driverName = doc.data().name || driverName;
+      await doc.ref.update({
+        isSuspended: false,
+        blockedFromTelegram: false,
+        status: 'approved'
+      });
+    }
+
+    bot.sendMessage(chatId, `✅ ஓட்டுநர் *${driverName || 'Driver'}* (${phone}) வெற்றிகரமாக மீண்டும் அனுமதிக்கப்பட்டார்!`, { parse_mode: 'Markdown' });
+  } catch (err) {
+    console.error('Error unblocking driver:', err.message);
+    bot.sendMessage(chatId, `❌ அன்-பிளாக் செய்யும்போது பிழை: ${err.message}`);
+  }
+});
+
+// /check <phone> command
+bot.onText(/\/check(?:\s+(\d{10}))?/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAdminUser(chatId, msg.from?.id)) return;
+
+  const phone = match[1];
+  if (!phone) {
+    return bot.sendMessage(chatId, '❌ பயன்படுத்தும் முறை:\n/check 9876543210 (10 இலக்க போன் நம்பர் குறிப்பிடவும்)');
+  }
+
+  try {
+    const variants = getPhoneVariants(phone);
+    const snap = await db.collection('drivers').where('phone', 'in', variants).get();
+
+    if (snap.empty) {
+      return bot.sendMessage(chatId, `❌ இந்த எண் (${phone}) கொண்ட ஓட்டுநர் காணப்படவில்லை.`);
+    }
+
+    const doc = snap.docs[0];
+    const data = doc.data();
+    const isSusp = data.isSuspended === true || data.blockedFromTelegram === true || data.status === 'suspended';
+
+    bot.sendMessage(
+      chatId,
+      `👤 *ஓட்டுநர் விவரம்:*\n\n` +
+      `பெயர்: ${data.name || 'இல்லை'}\n` +
+      `போன்: ${data.phone || phone}\n` +
+      `வண்டி எண்: ${data.vehicleNumber || 'இல்லை'}\n` +
+      `நிலை: ${isSusp ? '🚫 இடைநிறுத்தப்பட்டுள்ளது (Blocked)' : '✅ செயலில் உள்ளது (Active)'}`,
+      { parse_mode: 'Markdown' }
+    );
+  } catch (err) {
+    console.error('Error checking driver:', err.message);
+    bot.sendMessage(chatId, `❌ சரிபார்க்கும்போது பிழை: ${err.message}`);
+  }
+});
 
 // /start command
 bot.onText(/\/start/, async (msg) => {
