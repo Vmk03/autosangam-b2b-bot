@@ -48,7 +48,7 @@ const server = http.createServer((req, res) => {
   res.end(JSON.stringify({
     status: 'ONLINE',
     service: 'AutoSangam B2B Telegram Bot',
-    version: '1.3.0-admin-vmk',
+    version: '1.4.0-zero-read-opt',
     timestamp: new Date().toISOString(),
     uptimeMinutes: Math.floor(process.uptime() / 60)
   }));
@@ -747,9 +747,38 @@ async function processAndCreateRide(chatId, driver, fileId, details) {
     currentSession.latestRideId = docRef.id;
     sessions.set(chatId, currentSession);
 
-    // Schedule exact expiry cleanup right after timeout (2 minutes)
-    setTimeout(() => {
-      runAutoCleanup().catch(() => {});
+    // Schedule exact targeted expiry cleanup right after timeout (2 minutes)
+    // This reads ONLY this single document (1 read cost) instead of scanning the entire collection!
+    setTimeout(async () => {
+      try {
+        const freshDoc = await db.collection('rides').doc(docRef.id).get();
+        if (!freshDoc.exists) return;
+        const freshData = freshDoc.data();
+        if (freshData.status === 'pending') {
+          console.log(`⏰ [Auto-Expiry] Ride ${docRef.id} expired after timeout.`);
+          if (freshData.telegramChatId && !notifiedExpiredRideIds.has(docRef.id)) {
+            notifiedExpiredRideIds.add(docRef.id);
+            const expiredText = '⏰ யாரும் புக்கிங் எடுக்கவில்லை - நேரம் முடிந்தது (காலாவதியானது)';
+            if (freshData.telegramMessageId) {
+              bot.editMessageText(expiredText, { chat_id: freshData.telegramChatId, message_id: freshData.telegramMessageId })
+                .catch(() => {
+                  bot.sendMessage(freshData.telegramChatId, expiredText).catch(() => {});
+                });
+            } else {
+              bot.sendMessage(freshData.telegramChatId, expiredText).catch(() => {});
+            }
+          }
+
+          if (freshData.audioUrl) {
+            await deleteCloudinaryAudio(freshData.audioUrl);
+          }
+
+          await freshDoc.ref.delete();
+          console.log(`🗑️ [Auto-Expiry] Expired pending ride ${docRef.id} deleted.`);
+        }
+      } catch (expErr) {
+        console.error(`Error in targeted ride expiry for ${docRef.id}:`, expErr.message);
+      }
     }, (config.RIDE_DEFAULTS.timeoutSeconds + 2) * 1000);
   } catch (error) {
     console.error('❌ Error creating B2B ride from bot:', error);
@@ -766,7 +795,7 @@ async function processAndCreateRide(chatId, driver, fileId, details) {
 
 // ==========================================
 // 4. AUTOMATIC CLEANUP (Cloudinary & Firestore)
-// User's specific request: Auto-delete expired audio without manual admin clicking!
+// Optimized: Zero-polling architecture to minimize Firestore read counts
 // ==========================================
 const notifiedAcceptedRideIds = new Set();
 const notifiedExpiredRideIds = new Set();
@@ -774,13 +803,13 @@ const notifiedCompletedRideIds = new Set();
 
 async function runAutoCleanup() {
   try {
-    console.log('🧹 [Auto-Cleanup] Checking for expired B2B audio files in Cloudinary & Firestore...');
+    console.log('🧹 [Auto-Cleanup] Fallback check for expired pending B2B rides...');
     const now = admin.firestore.Timestamp.now();
 
-    // Query pending rides without needing any composite index
+    // Query pending rides only (lightweight, runs rarely)
     const pendingSnap = await db.collection('rides')
       .where('status', '==', 'pending')
-      .limit(50)
+      .limit(30)
       .get();
 
     const expiredDocs = pendingSnap.docs.filter(doc => {
@@ -812,7 +841,7 @@ async function runAutoCleanup() {
         }
       }
 
-      // Only clean up B2B audio (customer rides don't have audio)
+      // Only clean up B2B audio
       if (data.audioUrl) {
         await deleteCloudinaryAudio(data.audioUrl);
       }
@@ -823,22 +852,6 @@ async function runAutoCleanup() {
     }
 
     console.log(`🎉 [Auto-Cleanup] Successfully cleaned ${deletedCount} expired B2B rides & audio files!`);
-
-    // Also sweep and delete any remaining audio files from completed or cancelled rides
-    const finishedSnap = await db.collection('rides')
-      .where('status', 'in', ['completed', 'cancelled'])
-      .limit(30)
-      .get();
-
-    for (const fDoc of finishedSnap.docs) {
-      const fData = fDoc.data();
-      if (fData.audioUrl) {
-        await deleteCloudinaryAudio(fData.audioUrl);
-        await fDoc.ref.update({
-          audioUrl: admin.firestore.FieldValue.delete()
-        }).catch(() => {});
-      }
-    }
   } catch (err) {
     console.error('❌ Error during auto-cleanup:', err.message);
   }
@@ -846,22 +859,27 @@ async function runAutoCleanup() {
 
 // ==========================================
 // 5. REAL-TIME RIDE STATUS LISTENER
-// Notifies posting driver when another driver accepts the ride!
+// Efficient single listener filtered by createdAt to avoid reading past history!
 // ==========================================
 function startRideStatusListener() {
   console.log('👀 Listening for B2B ride status updates...');
 
-  // Listen for accepted rides in real-time
+  // Start listening only for rides created recently (within last 15 minutes)
+  // This avoids reading hundreds of past rides on Render boot/restart (saving 99% reads)!
+  const listenerStartTime = admin.firestore.Timestamp.fromDate(new Date(Date.now() - 15 * 60 * 1000));
+
   db.collection('rides')
-    .where('status', '==', 'accepted')
+    .where('createdAt', '>=', listenerStartTime)
     .onSnapshot((snapshot) => {
       snapshot.docChanges().forEach((change) => {
         if (change.type === 'added' || change.type === 'modified') {
           const ride = change.doc.data();
           const rideId = change.doc.id;
           const chatId = ride.telegramChatId;
+          if (!chatId) return;
 
-          if (chatId && !notifiedAcceptedRideIds.has(rideId)) {
+          // 1. Accepted Ride
+          if (ride.status === 'accepted' && !notifiedAcceptedRideIds.has(rideId)) {
             notifiedAcceptedRideIds.add(rideId);
             const acceptedBy = ride.acceptedBy || {};
             const driverName = acceptedBy.name || 'ஓட்டுநர்';
@@ -900,87 +918,52 @@ function startRideStatusListener() {
               bot.sendMessage(chatId, acceptedText, { reply_markup: replyMarkup }).catch(() => {});
             }
           }
-        }
-      });
-    }, (error) => {
-      console.error('Ride status listener error:', error.message);
-    });
 
-  // Listen for cancelled rides in real-time
-  db.collection('rides')
-    .where('status', '==', 'cancelled')
-    .onSnapshot((snapshot) => {
-      snapshot.docChanges().forEach((change) => {
-        if (change.type === 'added' || change.type === 'modified') {
-          const ride = change.doc.data();
-          const rideId = change.doc.id;
-          const chatId = ride.telegramChatId;
-
-          if (chatId && !notifiedExpiredRideIds.has(rideId)) {
+          // 2. Cancelled Ride
+          else if (ride.status === 'cancelled' && !notifiedExpiredRideIds.has(rideId)) {
             notifiedExpiredRideIds.add(rideId);
             const messageId = ride.telegramMessageId;
             const cancelledText = '❌ புக்கிங் ரத்து செய்யப்பட்டது';
             if (messageId) {
               bot.editMessageText(cancelledText, { chat_id: chatId, message_id: messageId })
                 .catch(() => {
-                  bot.sendMessage(chatId, cancelledText).catch(() => { });
+                  bot.sendMessage(chatId, cancelledText).catch(() => {});
                 });
             } else {
-              bot.sendMessage(chatId, cancelledText).catch(() => { });
+              bot.sendMessage(chatId, cancelledText).catch(() => {});
             }
 
             // Immediately delete audio from Cloudinary
             if (ride.audioUrl) {
-              deleteCloudinaryAudio(ride.audioUrl).catch(() => { });
+              deleteCloudinaryAudio(ride.audioUrl).catch(() => {});
             }
           }
-        }
-      });
-    }, (error) => {
-      console.error('Ride cancellation listener error:', error.message);
-    });
 
-  // Listen for completed rides in real-time and notify with final fare!
-  db.collection('rides')
-    .where('status', '==', 'completed')
-    .onSnapshot((snapshot) => {
-      snapshot.docChanges().forEach((change) => {
-        if (change.type === 'added' || change.type === 'modified') {
-          const ride = change.doc.data();
-          const rideId = change.doc.id;
-          const chatId = ride.telegramChatId;
-
-          if (chatId && !notifiedCompletedRideIds.has(rideId)) {
+          // 3. Completed Ride
+          else if (ride.status === 'completed' && !notifiedCompletedRideIds.has(rideId)) {
             notifiedCompletedRideIds.add(rideId);
-            // Only notify if ride completed recently (within last 10 minutes) or modified live
-            const completedAt = ride.completedAt?.toDate ? ride.completedAt.toDate() : (ride.completedAt ? new Date(ride.completedAt) : null);
-            const isRecent = !completedAt || (Date.now() - completedAt.getTime()) < 10 * 60 * 1000;
-            if (!isRecent && change.type === 'added') {
-              return;
-            }
-
             const totalFare = ride.totalFare || ride.fare || ride.meterData?.totalAmount || 0;
             const fareStr = Math.round(totalFare);
             const completedText = `✅ பயணம் முடிந்தது (கட்டணம்: ₹${fareStr})`;
 
-            bot.sendMessage(chatId, completedText).catch(() => { });
+            bot.sendMessage(chatId, completedText).catch(() => {});
 
-            // Immediately delete audio from Cloudinary once ride is completed
+            // Immediately delete audio from Cloudinary
             if (ride.audioUrl) {
-              deleteCloudinaryAudio(ride.audioUrl).catch(() => { });
+              deleteCloudinaryAudio(ride.audioUrl).catch(() => {});
             }
           }
         }
       });
     }, (error) => {
-      console.error('Ride completion listener error:', error.message);
+      console.error('Ride status listener error:', error.message);
     });
 }
 
 // Start Real-time listeners
 startRideStatusListener();
 
-// Run cleanup every 1 minute to immediately catch expired rides
-setInterval(runAutoCleanup, 60 * 1000);
-// Run once on startup after 10 seconds
-setTimeout(runAutoCleanup, 10000);
+// Run fallback cleanup once every 6 hours (gentle sanity sweep, saving read quota)
+setInterval(runAutoCleanup, 6 * 60 * 60 * 1000);
+// Run once on startup after 30 seconds
+setTimeout(runAutoCleanup, 30000);
