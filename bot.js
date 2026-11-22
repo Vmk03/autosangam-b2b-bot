@@ -119,12 +119,29 @@ async function findDriverByPhone(phone10) {
       .limit(1)
       .get();
 
-    if (snap.empty) return null;
+    if (snap.empty) {
+      // Check if they are a newly registered driver waiting for admin approval in driver_requests
+      const reqSnap = await db.collection('driver_requests')
+        .where('phone', 'in', variants)
+        .limit(1)
+        .get();
+      if (!reqSnap.empty) {
+        const reqData = reqSnap.docs[0].data();
+        return { unapproved: true, name: reqData.name || 'ஓட்டுநர்' };
+      }
+      return null;
+    }
+
     const doc = snap.docs[0];
     const data = doc.data();
 
-    // Check approval status
-    if (data.status !== 'approved' || data.isSuspended === true || data.isDeleted === true) {
+    // In AutoSangam, drivers in the 'drivers' collection are already registered & approved!
+    // They are only unapproved if explicitly marked suspended, deleted, or pending.
+    const isSuspended = data.isSuspended === true || data.status === 'suspended';
+    const isDeleted = data.isDeleted === true || data.status === 'deleted';
+    const isPending = data.status === 'pending' || data.subscriptionStatus === 'pending';
+
+    if (isSuspended || isDeleted || isPending) {
       return { unapproved: true, name: data.name };
     }
 
