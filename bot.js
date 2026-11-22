@@ -48,6 +48,7 @@ const server = http.createServer((req, res) => {
   res.end(JSON.stringify({
     status: 'ONLINE',
     service: 'AutoSangam B2B Telegram Bot',
+    version: '1.3.0-admin-vmk',
     timestamp: new Date().toISOString(),
     uptimeMinutes: Math.floor(process.uptime() / 60)
   }));
@@ -217,19 +218,42 @@ async function deleteCloudinaryAudio(audioUrl) {
 // ==========================================
 
 // Admin Configuration
-const ADMIN_CHAT_IDS = new Set([6402914481]);
+const ADMIN_CHAT_IDS = new Set([
+  '8987937018', 8987937018, // Vmk (Main Admin)
+  '6402914481', 6402914481  // Test Admin
+]);
+
+const ADMIN_PHONES = new Set([
+  '9750562127',
+  '9944848421',
+  '9790261161'
+]);
 
 function isAdminUser(chatId, fromId) {
-  if (ADMIN_CHAT_IDS.has(chatId) || (fromId && ADMIN_CHAT_IDS.has(fromId))) return true;
+  const cId = chatId ? String(chatId) : '';
+  const fId = fromId ? String(fromId) : '';
+
+  if (ADMIN_CHAT_IDS.has(cId) || ADMIN_CHAT_IDS.has(fId) || ADMIN_CHAT_IDS.has(Number(cId)) || ADMIN_CHAT_IDS.has(Number(fId))) {
+    return true;
+  }
+
   const session = sessions.get(chatId);
-  if (session && session.driver && session.driver.phone === '9944848421') return true;
+  if (session && session.driver) {
+    const dPhone = normalizePhone(session.driver.phone);
+    if (ADMIN_PHONES.has(dPhone)) return true;
+  }
+
   return false;
 }
 
 // /admin command - displays admin dashboard in Telegram
-bot.onText(/\/admin/, (msg) => {
+bot.onText(/^\/admin/i, (msg) => {
   const chatId = msg.chat.id;
-  if (!isAdminUser(chatId, msg.from?.id)) return;
+  console.log(`[Admin Command] /admin requested by chatId: ${chatId}, fromId: ${msg.from?.id}`);
+
+  if (!isAdminUser(chatId, msg.from?.id)) {
+    return bot.sendMessage(chatId, `⚠️ உங்கள் ஐடி (${chatId}) அட்மின் பட்டியலில் இல்லை. நீங்கள் நிர்வாகி கணக்கிலிருந்து முயற்சிக்கவும்.`);
+  }
 
   bot.sendMessage(
     chatId,
@@ -246,10 +270,12 @@ bot.onText(/\/admin/, (msg) => {
   );
 });
 
-// /block <phone> command
-bot.onText(/\/block(?:\s+(\d{10}))?/, async (msg, match) => {
+// /block or /ban <phone> command
+bot.onText(/^\/(?:block|ban)(?:\s+(\d{10}))?/i, async (msg, match) => {
   const chatId = msg.chat.id;
-  if (!isAdminUser(chatId, msg.from?.id)) return;
+  if (!isAdminUser(chatId, msg.from?.id)) {
+    return bot.sendMessage(chatId, `⚠️ நீங்கள் நிர்வாகி (Admin) இல்லை.`);
+  }
 
   const phone = match[1];
   if (!phone) {
@@ -289,10 +315,12 @@ bot.onText(/\/block(?:\s+(\d{10}))?/, async (msg, match) => {
   }
 });
 
-// /unblock <phone> command
-bot.onText(/\/unblock(?:\s+(\d{10}))?/, async (msg, match) => {
+// /unblock or /unlock <phone> command
+bot.onText(/^\/(?:unblock|unlock)(?:\s+(\d{10}))?/i, async (msg, match) => {
   const chatId = msg.chat.id;
-  if (!isAdminUser(chatId, msg.from?.id)) return;
+  if (!isAdminUser(chatId, msg.from?.id)) {
+    return bot.sendMessage(chatId, `⚠️ நீங்கள் நிர்வாகி (Admin) இல்லை.`);
+  }
 
   const phone = match[1];
   if (!phone) {
@@ -324,10 +352,12 @@ bot.onText(/\/unblock(?:\s+(\d{10}))?/, async (msg, match) => {
   }
 });
 
-// /check <phone> command
-bot.onText(/\/check(?:\s+(\d{10}))?/, async (msg, match) => {
+// /check or /status <phone> command
+bot.onText(/^\/(?:check|status)(?:\s+(\d{10}))?/i, async (msg, match) => {
   const chatId = msg.chat.id;
-  if (!isAdminUser(chatId, msg.from?.id)) return;
+  if (!isAdminUser(chatId, msg.from?.id)) {
+    return bot.sendMessage(chatId, `⚠️ நீங்கள் நிர்வாகி (Admin) இல்லை.`);
+  }
 
   const phone = match[1];
   if (!phone) {
