@@ -93,9 +93,8 @@ const sessions = new Map();
 // Helper to normalize phone number to 10 digits
 function normalizePhone(raw) {
   if (!raw) return '';
-  const digits = raw.replace(/\D/g, '');
-  if (digits.length === 10) return digits;
-  if (digits.length > 10 && digits.endsWith(digits.slice(-10))) {
+  const digits = raw.toString().replace(/\D/g, '');
+  if (digits.length >= 10) {
     return digits.slice(-10);
   }
   return digits;
@@ -271,15 +270,16 @@ bot.onText(/^\/admin/i, (msg) => {
 });
 
 // /block or /ban <phone> command
-bot.onText(/^\/(?:block|ban)(?:\s+(\d{10}))?/i, async (msg, match) => {
+bot.onText(/^\/(?:block|ban)(?:\s+(.+))?/i, async (msg, match) => {
   const chatId = msg.chat.id;
   if (!isAdminUser(chatId, msg.from?.id)) {
     return bot.sendMessage(chatId, `⚠️ நீங்கள் நிர்வாகி (Admin) இல்லை.`);
   }
 
-  const phone = match[1];
-  if (!phone) {
-    return bot.sendMessage(chatId, '❌ பயன்படுத்தும் முறை:\n/block 9876543210 (10 இலக்க போன் நம்பர் குறிப்பிடவும்)');
+  const rawPhone = match ? match[1] : null;
+  const phone = normalizePhone(rawPhone);
+  if (!phone || phone.length !== 10) {
+    return bot.sendMessage(chatId, '❌ பயன்படுத்தும் முறை:\n/block 9876543210 அல்லது /block +91 9876543210 (10 இலக்க போன் நம்பர் குறிப்பிடவும்)');
   }
 
   try {
@@ -316,15 +316,16 @@ bot.onText(/^\/(?:block|ban)(?:\s+(\d{10}))?/i, async (msg, match) => {
 });
 
 // /unblock or /unlock <phone> command
-bot.onText(/^\/(?:unblock|unlock)(?:\s+(\d{10}))?/i, async (msg, match) => {
+bot.onText(/^\/(?:unblock|unlock)(?:\s+(.+))?/i, async (msg, match) => {
   const chatId = msg.chat.id;
   if (!isAdminUser(chatId, msg.from?.id)) {
     return bot.sendMessage(chatId, `⚠️ நீங்கள் நிர்வாகி (Admin) இல்லை.`);
   }
 
-  const phone = match[1];
-  if (!phone) {
-    return bot.sendMessage(chatId, '❌ பயன்படுத்தும் முறை:\n/unblock 9876543210 (10 இலக்க போன் நம்பர் குறிப்பிடவும்)');
+  const rawPhone = match ? match[1] : null;
+  const phone = normalizePhone(rawPhone);
+  if (!phone || phone.length !== 10) {
+    return bot.sendMessage(chatId, '❌ பயன்படுத்தும் முறை:\n/unblock 9876543210 அல்லது /unblock +91 9876543210 (10 இலக்க போன் நம்பர் குறிப்பிடவும்)');
   }
 
   try {
@@ -353,15 +354,16 @@ bot.onText(/^\/(?:unblock|unlock)(?:\s+(\d{10}))?/i, async (msg, match) => {
 });
 
 // /check or /status <phone> command
-bot.onText(/^\/(?:check|status)(?:\s+(\d{10}))?/i, async (msg, match) => {
+bot.onText(/^\/(?:check|status)(?:\s+(.+))?/i, async (msg, match) => {
   const chatId = msg.chat.id;
   if (!isAdminUser(chatId, msg.from?.id)) {
     return bot.sendMessage(chatId, `⚠️ நீங்கள் நிர்வாகி (Admin) இல்லை.`);
   }
 
-  const phone = match[1];
-  if (!phone) {
-    return bot.sendMessage(chatId, '❌ பயன்படுத்தும் முறை:\n/check 9876543210 (10 இலக்க போன் நம்பர் குறிப்பிடவும்)');
+  const rawPhone = match ? match[1] : null;
+  const phone = normalizePhone(rawPhone);
+  if (!phone || phone.length !== 10) {
+    return bot.sendMessage(chatId, '❌ பயன்படுத்தும் முறை:\n/check 9876543210 அல்லது /check +91 9876543210 (10 இலக்க போன் நம்பர் குறிப்பிடவும்)');
   }
 
   try {
@@ -458,19 +460,35 @@ bot.on('contact', async (msg) => {
 function parseRideDetails(text) {
   if (!text) return {};
 
-  // 1. Phone number (10 digits starting with 6-9)
-  const phoneMatch = text.match(/\b[6-9]\d{9}\b/);
-  const customerPhone = phoneMatch ? phoneMatch[0] : null;
-
-  // 2. Google Maps or any URL
-  const urlMatch = text.match(/https?:\/\/[^\s]+/);
+  // 1. Google Maps or any URL (extract first to protect URLs containing numbers)
+  const urlMatch = text.match(/https?:\/\/[^\s]+/i);
   const mapUrl = urlMatch ? urlMatch[0] : null;
 
-  // 3. Remove phone and url to find route
   let remaining = text;
-  if (customerPhone) remaining = remaining.replace(customerPhone, ' ');
   if (mapUrl) remaining = remaining.replace(mapUrl, ' ');
-  remaining = remaining.trim();
+
+  // 2. Customer Phone Number:
+  // Supports:
+  // - Clean 10 digits: 9876543210
+  // - With country code: +919876543210, 919876543210, +91 9876543210, 09876543210
+  // - Formatted with spaces / dashes: +91 98765 43210, +91-98765-43210, 98765-43210
+  let customerPhone = null;
+  // Match prefix: optional +91, 91, or 0 followed by 10-digit mobile starting with 6, 7, 8, or 9
+  const phoneRegex = /(?:(?:\+|00)?91[\s.-]*|0)?([6-9](?:[\s.-]*\d){9})/;
+  const phoneMatch = remaining.match(phoneRegex);
+
+  if (phoneMatch) {
+    const rawMatched = phoneMatch[0];
+    const extracted10 = phoneMatch[1].replace(/\D/g, '');
+    if (extracted10.length === 10) {
+      customerPhone = extracted10;
+      // Remove the full matched phone number (including +91 / spaces / dashes) from remaining text
+      remaining = remaining.replace(rawMatched, ' ');
+    }
+  }
+
+  // Clean any remaining standalone '+' or extra spaces left behind
+  remaining = remaining.replace(/(?:^|\s)\+(?:\s|$)/g, ' ').replace(/\s+/g, ' ').trim();
 
   let pickupText = null;
   let dropText = null;
@@ -627,7 +645,7 @@ bot.on('message', async (msg) => {
 
       bot.sendMessage(
         chatId,
-        `🎤 உங்கள் ஆடியோ பெறப்பட்டது!${routeNote}\nவாடிக்கையாளரின் 10 இலக்க மொபைல் எண் (மற்றும் வழித்தடம் / மேப் லிங்க்) அனுப்பவும்:\n\n(எ.கா: 9876543210 காந்திபுரம் டு பீளமேடு)`
+        `🎤 உங்கள் ஆடியோ பெறப்பட்டது!${routeNote}\nவாடிக்கையாளரின் மொபைல் எண் (மற்றும் வழித்தடம் / மேப் லிங்க்) அனுப்பவும்:\n\n(எ.கா: +91 98765 43210 அல்லது 9876543210 காந்திபுரம் டு பீளமேடு)`
       );
     }
     return;
@@ -652,13 +670,13 @@ bot.on('message', async (msg) => {
 
         return bot.sendMessage(
           chatId,
-          `📍 வழித்தடம் பெறப்பட்டது:\n${routeDisplay}\n\nவாடிக்கையாளரின் 10 இலக்க மொபைல் எண்ணை அனுப்பவும் (எ.கா: 9876543210):`
+          `📍 வழித்தடம் பெறப்பட்டது:\n${routeDisplay}\n\nவாடிக்கையாளரின் மொபைல் எண்ணை அனுப்பவும் (எ.கா: 9876543210 அல்லது +91 98765 43210):`
         );
       }
 
       return bot.sendMessage(
         chatId,
-        `⚠️ தயவுசெய்து சரியான 10 இலக்க மொபைல் எண்ணை அனுப்பவும் (எ.கா: 9876543210 காந்திபுரம் டு பீளமேடு):`
+        `⚠️ தயவுசெய்து சரியான மொபைல் எண்ணை அனுப்பவும் (எ.கா: 9876543210 அல்லது +91 98765 43210 காந்திபுரம் டு பீளமேடு):`
       );
     }
 
